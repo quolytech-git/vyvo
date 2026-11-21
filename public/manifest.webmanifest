@@ -1,0 +1,48 @@
+{
+  "name": "VYVO — From AI Code to Reality",
+  "short_name": "VYVO",
+  "description": "Copy code from any AI, paste it into VYVO, and instantly see your working website. No coding skills required.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#09090B",
+  "theme_color": "#09090B",
+  "categories": ["productivity", "utilities", "developer"],
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "New Website",
+      "short_name": "New",
+      "description": "Paste new AI code and run it instantly",
+      "url": "/?new=1",
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "My Websites",
+      "short_name": "Saved",
+      "description": "Open your saved websites",
+      "url": "/?projects=1",
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }]
+    }
+  ]
+}
