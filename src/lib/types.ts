@@ -62,6 +62,8 @@ export interface RuntimeError {
   file?: string;
   stack?: string;
   suggestion?: string;
+  /** True when the website still rendered, so the problem is shown as a small banner instead of a blocking screen. */
+  nonBlocking?: boolean;
 }
 
 export type AIProvider = "auto" | "gemini" | "openai" | "anthropic";

@@ -75,6 +75,7 @@ export function SandboxFrame({
           column: typeof data.column === "number" ? data.column : undefined,
           stack: typeof data.stack === "string" ? data.stack : undefined,
         });
+        translated.nonBlocking = data.rendered === true;
         callbacksRef.current.onError(translated);
       } else if (data.type === "console") {
         callbacksRef.current.onConsole({
@@ -107,7 +108,8 @@ export function SandboxFrame({
         key={runId}
         title="VYVO Live Website Preview"
         srcDoc={html}
-        sandbox="allow-scripts allow-forms allow-modals allow-popups allow-downloads allow-pointer-lock"
+        sandbox="allow-scripts allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-downloads allow-pointer-lock"
+        allow="clipboard-write; fullscreen; autoplay; encrypted-media; picture-in-picture"
         referrerPolicy="no-referrer"
         className="w-full h-full border-0 block bg-white"
         onLoad={() => {

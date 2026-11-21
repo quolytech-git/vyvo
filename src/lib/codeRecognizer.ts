@@ -132,6 +132,11 @@ function extractDelimitedFiles(input: string): ExtractedBlock[] {
     .filter((b) => b.code.length > 0);
 }
 
+// Strict Tailwind utility matcher: only classes that are unmistakably Tailwind
+// (plain words like "grid", "flex", "hidden" or "container" are common in hand-written CSS too).
+const TAILWIND_TOKEN =
+  /^(?:(?:sm|md|lg|xl|2xl|hover|focus|active|dark|group-hover|disabled|first|last):)*-?(?:(?:p|px|py|pt|pb|pl|pr|m|mx|my|mt|mb|ml|mr|gap|gap-x|gap-y|space-x|space-y|w|h|min-w|min-h|max-w|max-h|top|left|right|bottom|inset|z|translate-x|translate-y)-(?:\d+(?:\.5)?|px|full|screen|auto|\[[^\]]+\]|\d\/\d|xs|sm|md|lg|xl|[2-7]xl|prose)|(?:text|bg|border|ring|from|to|via|fill|stroke|divide|placeholder|outline|decoration|shadow)-(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose|white|black|transparent)(?:-\d{2,3})?(?:\/\d+)?|text-(?:xs|sm|base|lg|xl|[2-9]xl)|font-(?:thin|light|normal|medium|semibold|bold|extrabold|black)|rounded-(?:none|sm|md|lg|xl|2xl|3xl|full)|shadow-(?:sm|md|lg|xl|2xl|none)|items-(?:center|start|end|baseline|stretch)|justify-(?:center|between|around|evenly|start|end)|flex-(?:col|row|wrap|1)|grid-cols-\d+|col-span-\d+|leading-(?:none|tight|snug|normal|relaxed|loose|\d+)|tracking-(?:tighter|tight|normal|wide|wider|widest)|min-h-screen|overflow-(?:x-auto|y-auto)|object-(?:cover|contain)|duration-\d+|opacity-\d+|backdrop-blur(?:-\w+)?|cursor-pointer)$/;
+
 export function detectTailwindUsage(code: string): boolean {
   if (/@tailwind\s+(base|components|utilities)|@import\s+["']tailwindcss["']/.test(code)) {
     return true;
@@ -139,22 +144,23 @@ export function detectTailwindUsage(code: string): boolean {
   if (/cdn\.tailwindcss\.com|tailwindcss/.test(code)) {
     return false; // Already loaded explicitly
   }
-  // Check for hallmark multi-utility Tailwind class attributes
-  const classMatches = code.match(/(?:class|className)\s*=\s*["'`{]([^"'`}]+)["'`}]/g);
-  if (!classMatches) return false;
 
-  const tailwindTokenRegex =
-    /\b(?:flex|grid|items-center|justify-between|justify-center|gap-\d|space-[xy]-\d|rounded-(?:md|lg|xl|2xl|full)|shadow-(?:sm|md|lg|xl)|bg-(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose|white|black)(?:-\d{2,3})?|text-(?:xs|sm|base|lg|xl|2xl|3xl|4xl|5xl|white|black|gray-\d{2,3}|slate-\d{2,3}|zinc-\d{2,3})|p[xytrbl]?-\d+|m[xytrbl]?-\d+|w-(?:full|screen|\d+)|h-(?:full|screen|\d+)|min-h-screen|max-w-(?:sm|md|lg|xl|2xl|3xl|4xl|5xl|6xl|7xl)|hover:|md:|lg:|dark:)/;
-
-  let hits = 0;
-  for (const attr of classMatches) {
-    const tokens = attr.split(/\s+/);
-    for (const token of tokens) {
-      if (tailwindTokenRegex.test(token)) hits++;
-      if (hits >= 3) return true;
+  const attrRegex = /(?:class|className)\s*=\s*(?:\{\s*)?["'`]([^"'`]+)["'`]/g;
+  const distinct = new Set<string>();
+  let m: RegExpExecArray | null;
+  while ((m = attrRegex.exec(code)) !== null) {
+    for (const token of m[1].split(/\s+/)) {
+      if (token && TAILWIND_TOKEN.test(token)) distinct.add(token);
     }
   }
-  return false;
+
+  // Pages that already ship their own stylesheet need much stronger evidence,
+  // otherwise Tailwind's reset would override their design.
+  let ownCss = 0;
+  const styleRegex = /<style[^>]*>([\s\S]*?)<\/style>/gi;
+  while ((m = styleRegex.exec(code)) !== null) ownCss += m[1].length;
+  const threshold = ownCss > 4000 ? 15 : ownCss > 0 ? 8 : 4;
+  return distinct.size >= threshold;
 }
 
 export function detectReactCode(code: string): boolean {
@@ -203,8 +209,30 @@ export function detectTypeScriptSyntax(code: string): boolean {
 }
 
 export function isFullHtmlDocument(code: string): boolean {
-  const trimmed = code.trim();
+  const trimmed = code
+    .replace(/^\uFEFF/, "")
+    .replace(/^\s*(?:<!--[\s\S]*?-->\s*)*/, "")
+    .trim();
   return /^<!doctype\s+html/i.test(trimmed) || /^<html[\s>]/i.test(trimmed);
+}
+
+/**
+ * Pulls a complete HTML document out of whatever the user pasted:
+ * AI chat text before/after it, a "```html" fence, or an answer that was split
+ * into two parts ("Type CONTINUE") with extra fence lines in the middle.
+ */
+export function extractFullHtmlDocument(
+  input: string
+): { html: string; spannedFences: boolean } | null {
+  const startMatch = input.match(/<!doctype\s+html[^>]*>|<html[\s>]/i);
+  if (!startMatch || startMatch.index === undefined) return null;
+  const start = startMatch.index;
+  const end = input.toLowerCase().lastIndexOf("</html>");
+  let segment = end > start ? input.slice(start, end + 7) : input.slice(start);
+  const fenceLines = /^[ \t]*```[\w-]*[ \t]*$/m;
+  const spannedFences = fenceLines.test(segment);
+  segment = segment.replace(/^[ \t]*```[\w-]*[ \t]*(?:\r?\n|$)/gm, "");
+  return { html: segment.trim(), spannedFences };
 }
 
 export function isHtmlFragment(code: string): boolean {
@@ -462,7 +490,7 @@ export function recognizeProjectFiles(
   const paths = Object.keys(files);
   const textContent = Object.values(files)
     .filter((f) => !f.isBinary)
-    .map((f) => f.content)
+    .map((f) => (/\.(?:css|scss)$/i.test(f.path) ? `<style>${f.content}</style>` : f.content))
     .join("\n");
 
   // Parse package.json if present
@@ -667,8 +695,47 @@ export function recognizePastedCode(rawInput: string): DetectionResult {
     }
   }
 
+  // Complete HTML document (the most common AI answer). Handles chat text around it,
+  // split "CONTINUE" answers, and small example snippets from the AI's guide that must NOT be merged in.
+  const docCount =
+    (trimmed.match(/<!doctype\s+html/gi) || []).length ||
+    (trimmed.match(/<html[\s>]/gi) || []).length;
+  let forcedSingle: { code: string } | null = null;
+
+  if (docCount === 1) {
+    const doc = extractFullHtmlDocument(trimmed);
+    if (doc && doc.html) {
+      const docIdx = blocks.findIndex((b) => isFullHtmlDocument(b.code));
+      if (doc.spannedFences || blocks.length <= 1 || docIdx === -1) {
+        forcedSingle = { code: doc.html };
+      } else {
+        const docCode = blocks[docIdx].code;
+        const hasInlineStyle = /<style[\s>]/i.test(docCode);
+        const hasInlineScript = /<script(?![^>]*\bsrc\s*=)[^>]*>\s*\S/i.test(docCode);
+        const kept = blocks.filter((b, i) => {
+          if (i === docIdx) return true;
+          const base = (b.filename || "").split("/").pop() || "";
+          if (base && /\.(?:css|js|mjs|json|svg)$/i.test(base) && docCode.includes(base)) return true;
+          const kind = classifySingleFile(b.code, b.lang).kind;
+          if (kind === "css" && !hasInlineStyle && b.code.length > 80) return true;
+          if (kind === "javascript" && !hasInlineScript && b.code.length > 80) return true;
+          return false;
+        });
+        if (kept.length === 1) {
+          forcedSingle = { code: docCode };
+        } else {
+          blocks = kept.map((b, i) =>
+            i === kept.indexOf(blocks[docIdx]) && !/\.html?$/i.test(b.filename || "")
+              ? { ...b, filename: "index.html" }
+              : b
+          );
+        }
+      }
+    }
+  }
+
   // Multi-block AI response: assemble all blocks into a clean project
-  if (blocks.length > 1) {
+  if (!forcedSingle && blocks.length > 1) {
     const files: Record<string, ProjectFile> = {};
     const usedNames = new Set<string>();
 
@@ -689,12 +756,12 @@ export function recognizePastedCode(rawInput: string): DetectionResult {
   }
 
   // Single block (either extracted from markdown fence or raw pasted code)
-  const singleCode = blocks.length === 1 ? blocks[0].code : trimmed;
-  const singleLang = blocks.length === 1 ? blocks[0].lang : "";
-  const singleFilename = blocks.length === 1 ? blocks[0].filename : undefined;
+  const singleCode = forcedSingle ? forcedSingle.code : blocks.length === 1 ? blocks[0].code : trimmed;
+  const singleLang = forcedSingle ? "html" : blocks.length === 1 ? blocks[0].lang : "";
+  const singleFilename = forcedSingle ? "index.html" : blocks.length === 1 ? blocks[0].filename : undefined;
 
   // Check for unsupported non-browser languages first
-  const unsupported = detectUnsupportedCode(singleCode, singleLang);
+  const unsupported = forcedSingle ? undefined : detectUnsupportedCode(singleCode, singleLang);
   if (unsupported) {
     const fallbackName = singleFilename || `code.${singleLang || "txt"}`;
     return {

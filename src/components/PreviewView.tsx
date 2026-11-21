@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from "react";
 import {
+  AlertTriangle,
   ArrowLeft,
   Code2,
   Download,
@@ -10,6 +11,7 @@ import {
   Minimize2,
   RefreshCw,
   Share2,
+  X,
 } from "lucide-react";
 import type { BundleResult, Project, RuntimeError, RuntimeLog } from "@/lib/types";
 import type { Theme } from "@/hooks/useTheme";
@@ -97,7 +99,16 @@ export function PreviewView({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [fullScreen]);
 
-  const activeError = !bundle.ok && bundle.error ? bundle.error : runtimeError;
+  // Blocking problems (code can't compile / page is blank) get the full repair screen.
+  // If the website rendered and only one part failed, show a small banner and keep it usable.
+  const [errorExpanded, setErrorExpanded] = useState(false);
+  useEffect(() => {
+    setErrorExpanded(false);
+  }, [runId]);
+  const softError =
+    bundle.ok && runtimeError && runtimeError.nonBlocking && !errorExpanded ? runtimeError : null;
+  const activeError =
+    !bundle.ok && bundle.error ? bundle.error : softError ? null : runtimeError;
   const isUnsupported = activeError?.type === "unsupported";
   const activeHtml =
     (activePage && bundle.pageHtmlMap?.[activePage]) || bundle.html || "";
@@ -329,6 +340,34 @@ export function PreviewView({
               onDismiss={bundle.ok ? onDismissError : undefined}
               onGoHome={onBackHome}
             />
+          )}
+
+          {/* Small non-blocking notice: the website works, one part reported a problem */}
+          {softError && (
+            <div className="absolute left-1/2 -translate-x-1/2 bottom-4 z-20 w-[calc(100%-1.5rem)] max-w-xl animate-vyvo-in">
+              <div className="flex items-center gap-3 pl-4 pr-2 py-2.5 rounded-2xl bg-[var(--surface)] border border-[var(--border-strong)] shadow-2xl">
+                <AlertTriangle className="w-4 h-4 text-[var(--warning)] shrink-0" />
+                <p className="flex-1 min-w-0 text-xs leading-snug text-[var(--ink)]">
+                  <span className="font-semibold">Your website is running.</span>{" "}
+                  <span className="text-[var(--ink-secondary)]">One part reported a small problem.</span>
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setErrorExpanded(true)}
+                  className="h-8 px-3 rounded-lg bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-[var(--accent-ink)] text-xs font-bold shrink-0 transition cursor-pointer"
+                >
+                  Fix it
+                </button>
+                <button
+                  type="button"
+                  onClick={onDismissError}
+                  className="w-8 h-8 inline-flex items-center justify-center rounded-lg text-[var(--ink-muted)] hover:text-[var(--ink)] hover:bg-[var(--surface-hover)] shrink-0 cursor-pointer"
+                  aria-label="Dismiss notice"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
           )}
 
           {/* Floating Exit Full Screen Pill */}

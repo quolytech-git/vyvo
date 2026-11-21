@@ -7,7 +7,7 @@ const STORE_PROJECTS = "projects";
 const LS_FALLBACK_KEY = "vyvo_projects_v1";
 const LS_DRAFT_KEY = "vyvo_draft_input_v1";
 const LS_AI_SETTINGS_KEY = "vyvo_ai_settings_v1";
-const LS_PROMPT_DRAFT_KEY = "vyvo_prompt_builder_v1";
+const LS_PROMPT_DRAFT_KEY = "vyvo_prompt_builder_v2";
 
 function openDb(): Promise<IDBDatabase | null> {
   if (typeof indexedDB === "undefined") return Promise.resolve(null);

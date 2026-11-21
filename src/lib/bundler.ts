@@ -20,6 +20,16 @@ function toDataUriJs(code: string): string {
   return `data:text/javascript;base64,${toBase64Utf8(code)}`;
 }
 
+/**
+ * Preview documents (iframe srcdoc) otherwise inherit VYVO's own URL as their base,
+ * which makes in-page links like href="#pricing" reload VYVO inside the preview.
+ * Pointing the base at about:srcdoc keeps anchor links, hash routing and modals working.
+ * Not used for exported files, which run on their own.
+ */
+function previewBaseTag(runId: string): string {
+  return runId === "export" ? "" : `<base href="about:srcdoc">`;
+}
+
 function escapeScriptClose(code: string): string {
   return code.replace(/<\/script>/gi, "<\\/script>");
 }
@@ -131,6 +141,72 @@ export function createRuntimeBridgeScript(runId: string): string {
     }
   });
 
+  // 1b. Cookie fallback (document.cookie throws in sandboxed previews)
+  try { void document.cookie; } catch (e) {
+    var jar = Object.create(null);
+    try {
+      Object.defineProperty(document, "cookie", {
+        configurable: true,
+        get: function() { return Object.keys(jar).map(function(k) { return k + "=" + jar[k]; }).join("; "); },
+        set: function(v) {
+          var pair = String(v).split(";")[0];
+          var i = pair.indexOf("=");
+          if (i > 0) jar[pair.slice(0, i).trim()] = pair.slice(i + 1).trim();
+        }
+      });
+    } catch (err) {}
+  }
+
+  // 1c. History fallback (pushState/replaceState can throw inside previews)
+  ["pushState", "replaceState"].forEach(function(fn) {
+    var orig = history[fn];
+    if (typeof orig !== "function") return;
+    history[fn] = function(state, title, url) {
+      try {
+        return orig.apply(history, arguments);
+      } catch (e) {
+        try { orig.call(history, state, title); } catch (e2) {}
+        if (fn === "pushState" && url != null) {
+          var s = String(url);
+          var h = s.indexOf("#");
+          if (h >= 0) {
+            try { if (location.hash !== s.slice(h)) location.hash = s.slice(h); } catch (e3) {}
+          }
+        }
+      }
+    };
+  });
+
+  // 1d. Service worker stub (not available in previews)
+  try { void navigator.serviceWorker; } catch (e) {
+    try {
+      Object.defineProperty(navigator, "serviceWorker", {
+        configurable: true,
+        value: {
+          register: function() { return Promise.resolve({ scope: "/", unregister: function() { return Promise.resolve(true); }, addEventListener: function() {} }); },
+          getRegistrations: function() { return Promise.resolve([]); },
+          getRegistration: function() { return Promise.resolve(undefined); },
+          addEventListener: function() {},
+          removeEventListener: function() {},
+          ready: new Promise(function() {}),
+          controller: null
+        }
+      });
+    } catch (err) {}
+  }
+
+  // 1e. Small in-page notice helper
+  function vyvoToast(text) {
+    try {
+      var el = document.createElement("div");
+      el.textContent = text;
+      el.setAttribute("role", "status");
+      el.style.cssText = "position:fixed;left:50%;bottom:20px;transform:translateX(-50%);z-index:2147483647;max-width:calc(100% - 32px);padding:10px 16px;border-radius:12px;background:#111114;color:#fafafa;font:500 13px/1.4 system-ui,-apple-system,sans-serif;box-shadow:0 10px 30px rgba(0,0,0,.25);border:1px solid #2a2a30;";
+      (document.body || document.documentElement).appendChild(el);
+      setTimeout(function() { if (el.parentNode) el.parentNode.removeChild(el); }, 3200);
+    } catch (e) {}
+  }
+
   // 2. Infinite loop protection watchdog
   var __loops = Object.create(null);
   var __resetScheduled = false;
@@ -177,13 +253,40 @@ export function createRuntimeBridgeScript(runId: string): string {
   });
 
   // 4. Error & unhandled promise capture
+  // Preview-only limitations (storage, cookies, service workers...) are logged as warnings, not shown as failures.
+  var BENIGN = /SecurityError|insecure|sandbox|denied in this document|^Script error|ResizeObserver loop|Failed to read the|AbortError|ServiceWorker|NotAllowedError|play\\(\\) request/i;
+  var errorCount = 0;
+  function isRendered() {
+    var b = document.body;
+    if (!b) return false;
+    if ((b.innerText || "").trim().length > 0) return true;
+    return !!b.querySelector("img,svg,canvas,video,picture,iframe");
+  }
+  function whenSettled(cb) {
+    if (document.readyState === "complete") setTimeout(cb, 250);
+    else window.addEventListener("load", function() { setTimeout(cb, 250); });
+  }
+  function reportError(payload) {
+    var msg = String(payload.message || "Runtime error");
+    if (BENIGN.test(msg)) {
+      post({ type: "console", level: "warn", message: "[preview] " + msg });
+      return;
+    }
+    post({ type: "console", level: "error", message: msg });
+    errorCount++;
+    if (errorCount > 1) return;
+    whenSettled(function() {
+      payload.type = "error";
+      payload.message = msg;
+      payload.rendered = isRendered();
+      post(payload);
+    });
+  }
+
   window.addEventListener("error", function(ev) {
-    var msg = ev.message || (ev.error && ev.error.message) || "Runtime error";
-    // Ignore benign ResizeObserver browser noise
-    if (/ResizeObserver loop/i.test(msg)) return;
-    post({
-      type: "error",
-      message: msg,
+    if (ev.target && ev.target !== window) return; // broken image/script tags are not fatal
+    reportError({
+      message: ev.message || (ev.error && ev.error.message) || "Runtime error",
       line: ev.lineno || undefined,
       column: ev.colno || undefined,
       stack: ev.error && ev.error.stack ? String(ev.error.stack) : undefined
@@ -192,17 +295,14 @@ export function createRuntimeBridgeScript(runId: string): string {
 
   window.addEventListener("unhandledrejection", function(ev) {
     var reason = ev.reason;
-    var msg = reason instanceof Error ? reason.message : typeof reason === "string" ? reason : "Unhandled async error";
-    post({
-      type: "error",
-      message: msg,
+    reportError({
+      message: reason instanceof Error ? reason.message : typeof reason === "string" ? reason : "Unhandled async error",
       stack: reason && reason.stack ? String(reason.stack) : undefined
     });
   });
 
   window.__vyvoReportError = function(err) {
-    post({
-      type: "error",
+    reportError({
       message: err && err.message ? String(err.message) : String(err),
       stack: err && err.stack ? String(err.stack) : undefined
     });
@@ -225,6 +325,19 @@ export function createRuntimeBridgeScript(runId: string): string {
       ev.preventDefault();
       post({ type: "navigate", href: href });
     }
+  });
+
+  // 5b. Preview-safe forms: a plain form submit would navigate away and blank the preview
+  window.addEventListener("submit", function(ev) {
+    if (ev.defaultPrevented) return;
+    ev.preventDefault();
+    var form = ev.target;
+    var action = form && form.getAttribute ? form.getAttribute("action") || "" : "";
+    if (/^mailto:/i.test(action)) {
+      try { window.open(action, "_blank"); } catch (e) {}
+    }
+    vyvoToast("Form sent (preview). Real sending works once your website is published.");
+    post({ type: "console", level: "info", message: "Form submitted in preview mode" + (action ? " (" + action + ")" : "") });
   });
 
   // 6. Ready notification
@@ -661,13 +774,21 @@ function bundleReactOrTsProject(
   const bootstrapScript = isReactMode
     ? selfMounts
       ? `<script type="module">
-import ${JSON.stringify(entryRes.specifier)};
+import(${JSON.stringify(entryRes.specifier)}).catch((err) => window.__vyvoReportError && window.__vyvoReportError(err));
 </script>`
       : `<script type="module">
-import React from "react";
-import { createRoot } from "react-dom/client";
-import * as EntryModule from ${JSON.stringify(entryRes.specifier)};
+let React, createRoot, EntryModule;
+try {
+  [React, { createRoot }, EntryModule] = await Promise.all([
+    import("react").then((m) => m.default || m),
+    import("react-dom/client"),
+    import(${JSON.stringify(entryRes.specifier)}),
+  ]);
+} catch (err) {
+  if (window.__vyvoReportError) window.__vyvoReportError(err);
+}
 
+if (React) {
 class VyvoErrorBoundary extends React.Component {
   constructor(props) {
     super(props);
@@ -702,6 +823,7 @@ if (!Component) {
     React.createElement(VyvoErrorBoundary, null, React.createElement(Component))
   );
 }
+}
 </script>`
     : `<script type="module">
 const __logs = [];
@@ -710,7 +832,11 @@ console.log = function(...args) {
   __logs.push(args.map(a => typeof a === "object" ? JSON.stringify(a, null, 2) : String(a)).join(" "));
   __origLog.apply(console, args);
 };
-await import(${JSON.stringify(entryRes.specifier)});
+try {
+  await import(${JSON.stringify(entryRes.specifier)});
+} catch (err) {
+  if (window.__vyvoReportError) window.__vyvoReportError(err);
+}
 setTimeout(() => {
   const root = document.getElementById("root");
   const app = document.getElementById("app");
@@ -729,6 +855,7 @@ setTimeout(() => {
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>${escapeHtml(title)}</title>
+  ${previewBaseTag(runId)}
   ${createRuntimeBridgeScript(runId)}
   ${extraHead}
   ${tailwindTag}
@@ -850,10 +977,11 @@ ${raw}
     }
   }
 
-  // 5. Inject runtime bridge + optional Tailwind + unlinked CSS into <head>
+  // 5. Inject base URL fix + runtime bridge + optional Tailwind + unlinked CSS into <head>
   const needsTailwind =
     (globalTailwind || detectTailwindUsage(raw)) && !/tailwindcss/i.test(raw);
   const headInjection = [
+    previewBaseTag(runId),
     createRuntimeBridgeScript(runId),
     needsTailwind ? `<script src="https://cdn.tailwindcss.com"></script>` : "",
     ...extraStyles,
@@ -861,22 +989,22 @@ ${raw}
     .filter(Boolean)
     .join("\n");
 
-  if (/<head[^>]*>/i.test(raw)) {
-    raw = raw.replace(/<head[^>]*>/i, (m) => `${m}\n${headInjection}`);
-  } else if (/<html[^>]*>/i.test(raw)) {
-    raw = raw.replace(/<html[^>]*>/i, (m) => `${m}\n<head>${headInjection}</head>`);
+  // Note: function replacements are used everywhere so "$" characters in user code are never altered.
+  const headTag = /<head(?:\s[^>]*)?>/i;
+  const htmlTag = /<html(?:\s[^>]*)?>/i;
+  if (headTag.test(raw)) {
+    raw = raw.replace(headTag, (m) => `${m}\n${headInjection}`);
+  } else if (htmlTag.test(raw)) {
+    raw = raw.replace(htmlTag, (m) => `${m}\n<head>${headInjection}</head>`);
   } else {
     raw = `${headInjection}\n${raw}`;
   }
 
-  // 6. Inject unlinked JS before </body>
+  // 6. Inject unlinked JS before the last </body>
   if (extraScripts.length > 0) {
     const jsBlock = extraScripts.join("\n");
-    if (/<\/body>/i.test(raw)) {
-      raw = raw.replace(/<\/body>/i, `${jsBlock}\n</body>`);
-    } else {
-      raw += `\n${jsBlock}`;
-    }
+    const idx = raw.toLowerCase().lastIndexOf("</body>");
+    raw = idx >= 0 ? `${raw.slice(0, idx)}${jsBlock}\n${raw.slice(idx)}` : `${raw}\n${jsBlock}`;
   }
 
   return raw;
