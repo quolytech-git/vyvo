@@ -65,6 +65,10 @@ const themeInitScript = `
   } catch (e) {
     document.documentElement.classList.add("dark");
   }
+  window.addEventListener("beforeinstallprompt", function(e) {
+    e.preventDefault();
+    window.__vyvoDeferredPrompt = e;
+  });
 })();
 `;
 

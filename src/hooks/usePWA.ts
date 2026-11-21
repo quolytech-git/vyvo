@@ -46,11 +46,19 @@ export function usePWA(): PWAState {
     window.addEventListener("online", handleOnline);
     window.addEventListener("offline", handleOffline);
 
+    // Pick up any beforeinstallprompt event captured before React finished hydrating
+    const win = window as Window & { __vyvoDeferredPrompt?: BeforeInstallPromptEvent };
+    if (win.__vyvoDeferredPrompt) {
+      setDeferredPrompt(win.__vyvoDeferredPrompt);
+    }
+
     const handleBeforeInstall = (e: Event) => {
       e.preventDefault();
+      win.__vyvoDeferredPrompt = e as BeforeInstallPromptEvent;
       setDeferredPrompt(e as BeforeInstallPromptEvent);
     };
     const handleAppInstalled = () => {
+      win.__vyvoDeferredPrompt = undefined;
       setIsInstalled(true);
       setDeferredPrompt(null);
     };

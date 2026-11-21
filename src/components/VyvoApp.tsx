@@ -6,6 +6,7 @@ import { recognizePastedCode, recognizeProjectFiles } from "@/lib/codeRecognizer
 import { bundleProject } from "@/lib/bundler";
 import { loadDraftInput, saveDraftInput } from "@/lib/storage";
 import { exportProjectAsZip, importZipFile, triggerBlobDownload } from "@/lib/zipUtils";
+import { downloadStandaloneVyvoApp } from "@/lib/downloadApp";
 import { parseShareHash } from "@/lib/shareUtils";
 import { useTheme } from "@/hooks/useTheme";
 import { usePWA } from "@/hooks/usePWA";
@@ -46,6 +47,7 @@ export function VyvoApp() {
 
   const [projectsOpen, setProjectsOpen] = useState(false);
   const [installModalOpen, setInstallModalOpen] = useState(false);
+  const [appJustDownloaded, setAppJustDownloaded] = useState(false);
   const [shareModalOpen, setShareModalOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
 
@@ -339,14 +341,24 @@ export function VyvoApp() {
     [activeProject, executeProject, notify]
   );
 
+  const handleDownloadAppFile = useCallback(() => {
+    downloadStandaloneVyvoApp();
+    setAppJustDownloaded(true);
+    notify("Downloaded VYVO-App.html! Open it from your Downloads folder anytime.");
+  }, [notify]);
+
   const handleInstallClick = useCallback(async () => {
     const outcome = await pwa.promptInstall();
     if (outcome === "accepted") {
       notify("VYVO installed! Launch it anytime from your home screen or desktop.");
-    } else if (outcome === "ios" || outcome === "unavailable") {
+    } else if (outcome === "ios") {
+      setInstallModalOpen(true);
+    } else {
+      // Browser didn't trigger native install prompt -> immediately download the standalone VYVO App
+      handleDownloadAppFile();
       setInstallModalOpen(true);
     }
-  }, [pwa, notify]);
+  }, [pwa, notify, handleDownloadAppFile]);
 
   const handleOpenSavedProject = useCallback(
     (project: Project) => {
@@ -465,6 +477,16 @@ export function VyvoApp() {
       <InstallModal
         open={installModalOpen}
         isIOS={pwa.isIOS}
+        canPromptInstall={pwa.canPromptInstall}
+        justDownloaded={appJustDownloaded}
+        onNativeInstall={async () => {
+          const res = await pwa.promptInstall();
+          if (res === "accepted") {
+            setInstallModalOpen(false);
+            notify("VYVO installed!");
+          }
+        }}
+        onDownloadApp={handleDownloadAppFile}
         onClose={() => setInstallModalOpen(false)}
       />
 
