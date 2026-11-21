@@ -10,8 +10,8 @@ import {
   getCompletionStats,
 } from "@/lib/masterPrompt";
 
-describe("Master Prompt Builder", () => {
-  it("fills empty gaps automatically with DEFAULT / NONE and preserves all 7 files", () => {
+describe("Simplified Master Prompt Builder", () => {
+  it("fills empty gaps automatically with DEFAULT / NONE and generates all 7 files", () => {
     const files = buildIndividualFiles(EMPTY_PROMPT_DATA);
     expect(Object.keys(files)).toEqual([
       "brand.txt",
@@ -27,11 +27,10 @@ describe("Master Prompt Builder", () => {
     expect(files["brand.txt"]).toContain("Theme: DEFAULT");
     expect(files["content.txt"]).toContain("Headline (3-8 words): DEFAULT");
     expect(files["pages.txt"]).toContain("[x] Hero");
-    expect(files["pages.txt"]).toContain("[ ] Work");
     expect(files["motion.txt"]).toContain("Amount: subtle (recommended)");
   });
 
-  it("populates user answers accurately into all 7 files and full master prompt", () => {
+  it("populates dropdown choices and optional text into all 7 files and full master prompt", () => {
     const full = buildFullMasterPrompt(SAMPLE_PROMPT_DATA);
     expect(full).toContain("PART 0 — YOUR ROLE AND GOAL");
     expect(full).toContain("PART 9 — SELF-REVIEW CHECKLIST");
@@ -45,7 +44,7 @@ describe("Master Prompt Builder", () => {
     expect(full).toContain("Dark/light toggle: yes");
 
     const stats = getCompletionStats(SAMPLE_PROMPT_DATA);
-    expect(stats.totalFilled).toBeGreaterThan(15);
+    expect(stats.answered).toBeGreaterThan(5);
   });
 
   it("exports MASTER-PROMPT.txt and all 7 filled files into a ZIP archive", async () => {
