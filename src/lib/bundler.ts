@@ -20,16 +20,6 @@ function toDataUriJs(code: string): string {
   return `data:text/javascript;base64,${toBase64Utf8(code)}`;
 }
 
-/**
- * Preview documents (iframe srcdoc) otherwise inherit VYVO's own URL as their base,
- * which makes in-page links like href="#pricing" reload VYVO inside the preview.
- * Pointing the base at about:srcdoc keeps anchor links, hash routing and modals working.
- * Not used for exported files, which run on their own.
- */
-function previewBaseTag(runId: string): string {
-  return runId === "export" ? "" : `<base href="about:srcdoc">`;
-}
-
 function escapeScriptClose(code: string): string {
   return code.replace(/<\/script>/gi, "<\\/script>");
 }
@@ -308,14 +298,53 @@ export function createRuntimeBridgeScript(runId: string): string {
     });
   };
 
-  // 5. Multi-page HTML navigation & safe links
+  // 4b. Replace missing local images (e.g. assets/hero.jpg) with a clean inline SVG placeholder
+  window.addEventListener("error", function(ev) {
+    var t = ev && ev.target;
+    if (!t || t === window || t.tagName !== "IMG") return;
+    if (t.dataset && t.dataset.vyvoFallback) return;
+    if (t.dataset) t.dataset.vyvoFallback = "1";
+    var label = (t.getAttribute("alt") || t.getAttribute("src") || "Image").replace(/[<>&"']/g, "").slice(0, 48);
+    var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="800" height="500" viewBox="0 0 800 500">' +
+      '<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#18181c"/><stop offset="100%" stop-color="#27272f"/></linearGradient></defs>' +
+      '<rect width="800" height="500" fill="url(#g)"/>' +
+      '<rect x="24" y="24" width="752" height="452" rx="16" fill="none" stroke="#3f3f46" stroke-width="2" stroke-dasharray="6 6"/>' +
+      '<text x="400" y="255" text-anchor="middle" fill="#a1a1aa" font-family="system-ui,-apple-system,sans-serif" font-size="20" font-weight="500">' +
+      (label || "Visual Placeholder") + "</text></svg>";
+    t.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
+  }, true);
+
+  // 5. Multi-page HTML navigation, in-page #anchor scrolling & safe links
   document.addEventListener("click", function(ev) {
     var el = ev.target;
     while (el && el.tagName !== "A") el = el.parentElement;
     if (!el) return;
-    var href = el.getAttribute("href");
-    if (!href) return;
-    if (href.startsWith("#")) return;
+    var href = (el.getAttribute("href") || "").trim();
+    if (!href || href === "javascript:void(0)" || href === "javascript:;") {
+      ev.preventDefault();
+      return;
+    }
+    if (href.startsWith("#")) {
+      if (!ev.defaultPrevented) {
+        ev.preventDefault();
+        var rawHash = href.slice(1);
+        try {
+          if (location.hash !== href) location.hash = href;
+          else window.dispatchEvent(new HashChangeEvent("hashchange"));
+        } catch (e) {
+          try { window.dispatchEvent(new HashChangeEvent("hashchange")); } catch (e2) {}
+        }
+        if (href === "#" || rawHash.toLowerCase() === "top") {
+          window.scrollTo({ top: 0, behavior: "smooth" });
+        } else if (rawHash && !rawHash.startsWith("/")) {
+          var targetEl = document.getElementById(rawHash) || document.getElementsByName(rawHash)[0];
+          if (targetEl && typeof targetEl.scrollIntoView === "function") {
+            targetEl.scrollIntoView({ behavior: "smooth", block: "start" });
+          }
+        }
+      }
+      return;
+    }
     if (/^https?:\\/\\//i.test(href) || /^mailto:/i.test(href) || /^tel:/i.test(href)) {
       if (!el.getAttribute("target")) el.setAttribute("target", "_blank");
       el.setAttribute("rel", "noopener noreferrer");
@@ -324,6 +353,18 @@ export function createRuntimeBridgeScript(runId: string): string {
     if (/\\.html?(?:[?#].*)?$/i.test(href)) {
       ev.preventDefault();
       post({ type: "navigate", href: href });
+      return;
+    }
+    // Relative path links on a single-page site (e.g. href="/pricing"): scroll to matching section if present
+    if (!ev.defaultPrevented) {
+      ev.preventDefault();
+      var slug = href.replace(/^[./]+/, "").split(/[/?#]/)[0];
+      var sec = slug ? document.getElementById(slug) : null;
+      if (sec && typeof sec.scrollIntoView === "function") {
+        sec.scrollIntoView({ behavior: "smooth", block: "start" });
+      } else {
+        vyvoToast("Link: " + href + " (single-page preview)");
+      }
     }
   });
 
@@ -339,6 +380,28 @@ export function createRuntimeBridgeScript(runId: string): string {
     vyvoToast("Form sent (preview). Real sending works once your website is published.");
     post({ type: "console", level: "info", message: "Form submitted in preview mode" + (action ? " (" + action + ")" : "") });
   });
+
+  // 5c. Scroll-reveal safety net: ensures sections hidden by ".js .reveal { opacity: 0 }" never stay invisible
+  function ensureRevealed() {
+    try {
+      var candidates = document.querySelectorAll(".reveal, [data-reveal], .scroll-reveal, .fade-in, .fade-up, .animate-on-scroll, [data-animate], .sr");
+      candidates.forEach(function(el) {
+        var st = window.getComputedStyle(el);
+        if (st && st.opacity === "0") {
+          el.classList.add("is-visible", "visible", "revealed", "in-view", "active", "show");
+          if (window.getComputedStyle(el).opacity === "0") {
+            el.style.opacity = "1";
+            el.style.transform = "none";
+          }
+        }
+      });
+    } catch (e) {}
+  }
+  window.addEventListener("load", function() {
+    setTimeout(ensureRevealed, 700);
+    setTimeout(ensureRevealed, 1800);
+  });
+  window.addEventListener("scroll", ensureRevealed, { passive: true });
 
   // 6. Ready notification
   function sendReady() {
@@ -855,7 +918,6 @@ setTimeout(() => {
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>${escapeHtml(title)}</title>
-  ${previewBaseTag(runId)}
   ${createRuntimeBridgeScript(runId)}
   ${extraHead}
   ${tailwindTag}
@@ -896,6 +958,46 @@ function resolveAssetDataUrl(file: ProjectFile): string {
 }
 
 /**
+ * Repairs an inline JS script if the AI output got cut off near the end,
+ * so the rest of the website's interactive code still runs cleanly.
+ */
+function healTruncatedScript(scriptBody: string): string {
+  const trimmed = scriptBody.trim();
+  if (!trimmed) return scriptBody;
+  try {
+    new Function(trimmed);
+    return scriptBody;
+  } catch {
+    // Try progressively dropping up to 8 trailing cut-off lines and closing open brackets
+    const lines = trimmed.split(/\r?\n/);
+    for (let drop = 0; drop <= Math.min(8, lines.length - 1); drop++) {
+      const candidate = lines.slice(0, lines.length - drop).join("\n");
+      const openParens = Math.max(0, (candidate.match(/\(/g) || []).length - (candidate.match(/\)/g) || []).length);
+      const openBraces = Math.max(0, (candidate.match(/\{/g) || []).length - (candidate.match(/\}/g) || []).length);
+      if (openParens <= 6 && openBraces <= 6) {
+        const suffix = "\n" + "}".repeat(openBraces) + ")".repeat(openParens) + ";";
+        try {
+          new Function(candidate + suffix);
+          return candidate + suffix;
+        } catch {
+          // Also try closing paren-brace pairs like "});"
+          const altSuffix = "\n" + "});".repeat(Math.min(openParens, openBraces)) +
+            "}".repeat(Math.max(0, openBraces - openParens)) +
+            ")".repeat(Math.max(0, openParens - openBraces));
+          try {
+            new Function(candidate + altSuffix);
+            return candidate + altSuffix;
+          } catch {
+            // keep trying
+          }
+        }
+      }
+    }
+    return scriptBody;
+  }
+}
+
+/**
  * Compiles a single HTML page inside a single-file or multi-file HTML/CSS/JS project.
  */
 function buildHtmlPage(
@@ -906,6 +1008,24 @@ function buildHtmlPage(
 ): string {
   const pageFile = files[pagePath];
   let raw = pageFile ? pageFile.content : "";
+
+  // Auto-close unclosed <style> or <script> tags if the AI output was cut off at the end
+  const openScripts = (raw.match(/<script\b[^>]*>/gi) || []).length;
+  const closeScripts = (raw.match(/<\/script>/gi) || []).length;
+  if (openScripts > closeScripts) {
+    raw += "\n</script>";
+  }
+  const openStyles = (raw.match(/<style\b[^>]*>/gi) || []).length;
+  const closeStyles = (raw.match(/<\/style>/gi) || []).length;
+  if (openStyles > closeStyles) {
+    raw += "\n</style>";
+  }
+
+  // Auto-heal inline <script> blocks that were cut off at the end
+  raw = raw.replace(
+    /(<script(?![^>]*\bsrc\s*=)(?![^>]*type\s*=\s*["'](?:application\/ld\+json|importmap|text\/babel)["'])[^>]*>)([\s\S]*?)(<\/script>)/gi,
+    (_m, openTag, body, closeTag) => `${openTag}${healTruncatedScript(body)}${closeTag}`
+  );
 
   // Wrap fragments cleanly into a complete HTML5 document
   if (!isFullHtmlDocument(raw)) {
@@ -977,11 +1097,10 @@ ${raw}
     }
   }
 
-  // 5. Inject base URL fix + runtime bridge + optional Tailwind + unlinked CSS into <head>
+  // 5. Inject runtime bridge + optional Tailwind + unlinked CSS into <head>
   const needsTailwind =
     (globalTailwind || detectTailwindUsage(raw)) && !/tailwindcss/i.test(raw);
   const headInjection = [
-    previewBaseTag(runId),
     createRuntimeBridgeScript(runId),
     needsTailwind ? `<script src="https://cdn.tailwindcss.com"></script>` : "",
     ...extraStyles,

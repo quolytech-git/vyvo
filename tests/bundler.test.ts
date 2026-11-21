@@ -109,4 +109,24 @@ export default function App() {
     expect(result.error?.type).toBe("compile");
     expect(result.error?.friendlyMessage.length).toBeGreaterThan(10);
   });
+
+  it("auto-heals truncated HTML scripts and preserves $ characters in HTML/JS", () => {
+    const truncatedHtml = `<!DOCTYPE html>
+<html>
+<head><title>Framer Site</title><style>.reveal { opacity: 0; }</style></head>
+<body>
+  <h1 class="reveal">Price: $& $' $\` $100</h1>
+  <script>
+    document.addEventListener("DOMContentLoaded", function() {
+      const price = "$100";
+      console.log(price);
+      const cutOffLine = 
+  `;
+    const detection = recognizePastedCode(truncatedHtml);
+    const result = bundleProject(detection, "test-run-6");
+    expect(result.ok).toBe(true);
+    expect(result.html).toContain("Price: $& $' $` $100");
+    expect(result.html).toContain("</script>");
+    expect(result.html).toContain("ensureRevealed");
+  });
 });
